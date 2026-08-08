@@ -37,19 +37,6 @@
 # get_ipython().run_cell_magic('bash', '', 'python -m pip install -qU uv --root-user-action=ignore\n\nROCM_TAG="$({ command -v amd-smi >/dev/null 2>&1 && amd-smi version 2>/dev/null | awk -F\'ROCm version: \' \'NF>1{split($2,a,"."); print "rocm"a[1]"."a[2]; ok=1; exit} END{exit !ok}\'; } || { [ -r /opt/rocm/.info/version ] && awk -F. \'{print "rocm"$1"."$2; exit}\' /opt/rocm/.info/version; } || { command -v hipconfig >/dev/null 2>&1 && hipconfig --version 2>/dev/null | awk -F\': *\' \'/HIP version/{split($2,a,"."); print "rocm"a[1]"."a[2]; ok=1; exit} END{exit !ok}\'; } || { command -v dpkg-query >/dev/null 2>&1 && ver="$(dpkg-query -W -f=\'${Version}\\n\' rocm-core 2>/dev/null)" && [ -n "$ver" ] && awk -F\'[.-]\' \'{print "rocm"$1"."$2; exit}\' <<<"$ver"; } || { command -v rpm >/dev/null 2>&1 && ver="$(rpm -q --qf \'%{VERSION}\\n\' rocm-core 2>/dev/null)" && [ -n "$ver" ] && awk -F\'[.-]\' \'{print "rocm"$1"."$2; exit}\' <<<"$ver"; })"\n[ -n "$ROCM_TAG" ] || { echo "Could not detect ROCm. Install ROCm first or set ROCM_TAG manually."; exit 1; }\ncase "$ROCM_TAG" in\n  rocm6.[0-4]|rocm7.[02]) T="$ROCM_TAG" ;;\n  rocm6.*) T="rocm6.4" ;;\n  *) T="rocm7.1" ;;\nesac\npip install bitsandbytes\nPYTORCH_INDEX_URL="https://download.pytorch.org/whl/${T}"\nuv pip install --system -U --force-reinstall \\\n    torch torchvision torchaudio triton-rocm \\\n    --index-url "$PYTORCH_INDEX_URL"\nuv pip install --system cut-cross-entropy torchao --no-deps\nuv pip install --system -U --no-deps "unsloth[amd]" "unsloth_zoo[amd]"\nuv pip install --system --no-deps -r "$(python -c \'import pathlib,site;print(next(p for r in [*site.getsitepackages(),site.getusersitepackages()] if (p:=pathlib.Path(r,"studio/backend/requirements/no-torch-runtime.txt")).exists()))\')" torchao\nuv pip install --system --no-deps -U "tokenizers>=0.22.0,<=0.23.0"\n')
 # 
 # 
-# # In[ ]:
-# 
-# 
-# import os
-# import sys
-# import torch; torch._dynamo.config.recompile_limit = 64;
-# get_ipython().system('git clone https://github.com/sgl-project/sglang.git && cd sglang && pip install -e "python[all]"')
-# sys.path.append(f'{os.getcwd()}/sglang/')
-# sys.path.append(f'{os.getcwd()}/sglang/python')
-# get_ipython().system('uv pip install --system -qqq sentencepiece protobuf "datasets==4.3.0" "huggingface_hub>=0.34.0" hf_transfer "transformers==4.56.2" torchcodec')
-# get_ipython().system('uv pip install --system -qqq --no-deps accelerate peft "trl==0.22.2"')
-# 
-# 
 # # ### Unsloth
 
 # ### Launch sglang inference for unsloth/gemma-3n-E2B-it (https://huggingface.co/unsloth/gemma-3n-E2B-it)
@@ -57,11 +44,43 @@
 # In[2]:
 
 
-# Load and run the model using sglang
-get_ipython().system('nohup python -m sglang.launch_server --model-path unsloth/gemma-3n-E2B-it --attention-backend fa3 --port 8000 > sglang.log &')
+# Load and run the model using sglang.
+#
+# Popen, not `!... &`: IPython's `system_piped`, which every kernel except
+# Colab's uses, raises OSError on a trailing `&`, so on Kaggle, plain Jupyter
+# or papermill this cell could never run.
+# Backend left to sglang: `fa3` is Hopper (sm90) only, so it fails on the
+# T4 / L4 / A100 a session actually hands out.
+import subprocess, sys
+from sglang.utils import wait_for_server
 
-# tail vllm logs. Check server has been started correctly
-get_ipython().system('while ! grep -q "The server is fired up and ready to roll" sglang.log; do tail -n 1 sglang.log; sleep 5; done')
+log = open("sglang.log", "w")
+server = subprocess.Popen(
+    [sys.executable, "-m", "sglang.launch_server",
+     "--model-path", "unsloth/gemma-3n-E2B-it",
+     "--port", "8000"],
+    stdout = log, stderr = subprocess.STDOUT,
+)
+
+# Both arguments matter. `wait_for_server` defaults to timeout = None, which is
+# wait forever, so without one this is the same unbounded hang as the shell
+# `while ! grep -q` loop it replaces. `process` makes it poll the subprocess and
+# raise as soon as a failed launch exits, instead of waiting out the timeout.
+try:
+    wait_for_server("http://localhost:8000", timeout = 900, process = server)
+except Exception:
+    # On the timeout path the server is still alive, and the kernel outlives the
+    # cell, so re-raising alone would leave it holding the GPU and port 8000 and
+    # the retry would fail on address-in-use rather than on the real problem.
+    server.terminate()
+    try:
+        server.wait(timeout = 30)
+    except subprocess.TimeoutExpired:
+        server.kill()
+    log.close()
+    # The server's own log is the only thing that says why it did not start.
+    print(open("sglang.log").read()[-4000:])
+    raise
 
 
 # ### Image helper functions
