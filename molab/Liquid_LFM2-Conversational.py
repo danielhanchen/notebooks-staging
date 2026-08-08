@@ -7,11 +7,13 @@
 #     "cut_cross_entropy",
 #     "datasets>=3.4.1,<4.0.0",
 #     "hf_transfer",
-#     "huggingface_hub>=0.34.0",
+#     "huggingface_hub>=1.5.0,<2.0",
 #     "marimo",
 #     "peft",
 #     "protobuf",
+#     "safetensors>=0.8.0",
 #     "sentencepiece",
+#     "tokenizers>=0.22.0,<=0.23.0",
 #     "torchao>=0.16.0",
 #     "transformers @ git+https://github.com/huggingface/transformers.git",
 #     "triton>=3.2.0",
@@ -92,6 +94,12 @@ def _(mo):
 @app.cell
 def _():
     # Need main branch for Liquid LFM2 models
+    # --no-deps above means pip never enforces anything transformers main needs, so
+    # every floor it declares is a separate delayed import error. molab and Kaggle
+    # ship hub 0.36.2 and safetensors 0.7.0, and the pinned transformers installed
+    # earlier leaves tokenizers at 0.21.x, so all three fail in turn before a line
+    # of training. Pinning only the one that surfaced first just moves the error.
+    # Taken from transformers main setup.py.
     # Install Mamba kernels
     return
 
